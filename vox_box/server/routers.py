@@ -1,14 +1,20 @@
 import asyncio
 import functools
+import logging
 import mimetypes
+import queue
+import struct
+import threading
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from pydantic import BaseModel
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from vox_box.backends.stt.base import STTBackend
 from vox_box.backends.tts.base import TTSBackend
 from vox_box.server.model import get_model_instance
 from concurrent.futures import ThreadPoolExecutor
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -23,6 +29,9 @@ ALLOWED_SPEECH_OUTPUT_AUDIO_TYPES = {
     "pcm",
 }
 
+# Formats that support true HTTP-level streaming (no container finalization needed)
+STREAMABLE_FORMATS = {"pcm", "wav"}
+
 
 class SpeechRequest(BaseModel):
     model: str
@@ -30,6 +39,30 @@ class SpeechRequest(BaseModel):
     voice: str
     response_format: str = "mp3"
     speed: float = 1.0
+
+
+def _create_wav_header(sample_rate: int, channels: int = 1, bits_per_sample: int = 16) -> bytes:
+    """Create a WAV/RIFF header for streaming (data size set to max placeholder)."""
+    data_size = 0x7FFFFFFF  # Unknown size — streaming
+    byte_rate = sample_rate * channels * bits_per_sample // 8
+    block_align = channels * bits_per_sample // 8
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        data_size + 36,
+        b"WAVE",
+        b"fmt ",
+        16,  # fmt chunk size
+        1,  # PCM format
+        channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        bits_per_sample,
+        b"data",
+        data_size,
+    )
+    return header
 
 
 @router.post("/v1/audio/speech")
@@ -55,24 +88,107 @@ async def speech(request: SpeechRequest):
                 status_code=400, detail="Model instance does not support speech API"
             )
 
-        func = functools.partial(
-            model_instance.speech,
-            request.input,
-            request.voice,
-            request.speed,
-            request.response_format,
+        # Determine if we can use streaming path:
+        # 1. Format must be streamable (pcm or wav)
+        # 2. Speed must be 1.0 (CosyVoice streaming doesn't support speed changes)
+        # 3. Backend must support speech_stream()
+        can_stream = (
+            request.response_format in STREAMABLE_FORMATS
+            and request.speed == 1.0
+            and hasattr(model_instance, "speech_stream")
         )
 
-        loop = asyncio.get_event_loop()
-        audio_file = await loop.run_in_executor(
-            executor,
-            func,
-        )
+        if can_stream:
+            try:
+                # Verify speech_stream is actually implemented (not just base class stub)
+                model_instance.speech_stream.__func__
+                if model_instance.speech_stream.__func__ is TTSBackend.speech_stream:
+                    can_stream = False
+            except AttributeError:
+                pass
 
-        media_type = get_media_type(request.response_format)
-        return FileResponse(audio_file, media_type=media_type)
+        if can_stream:
+            return _streaming_speech_response(model_instance, request)
+        else:
+            return await _file_speech_response(model_instance, request)
+
     except Exception as e:
         return HTTPException(status_code=500, detail=f"Failed to generate speech, {e}")
+
+
+def _streaming_speech_response(model_instance: TTSBackend, request: SpeechRequest):
+    """Return a StreamingResponse that yields audio chunks in real-time."""
+    sample_rate = getattr(model_instance, "stream_sample_rate", 22050)
+    media_type = get_media_type(request.response_format)
+
+    async def audio_stream_generator():
+        chunk_queue = queue.Queue(maxsize=20)
+        error_holder = [None]
+
+        def producer():
+            try:
+                for pcm_chunk in model_instance.speech_stream(
+                    request.input,
+                    request.voice,
+                    request.speed,
+                ):
+                    chunk_queue.put(pcm_chunk)
+            except Exception as e:
+                error_holder[0] = e
+            finally:
+                chunk_queue.put(None)  # Sentinel: end of stream
+
+        thread = threading.Thread(target=producer, daemon=True)
+        thread.start()
+
+        # For WAV format, emit RIFF header before PCM data
+        if request.response_format == "wav":
+            yield _create_wav_header(sample_rate, channels=1, bits_per_sample=16)
+
+        loop = asyncio.get_event_loop()
+        while True:
+            chunk = await loop.run_in_executor(None, chunk_queue.get)
+            if chunk is None:
+                break
+            yield chunk
+
+        thread.join(timeout=5)
+        if error_holder[0]:
+            logger.error(f"Streaming TTS error: {error_holder[0]}")
+
+    headers = {
+        "Transfer-Encoding": "chunked",
+        "X-Audio-Sample-Rate": str(sample_rate),
+        "X-Audio-Channels": "1",
+        "X-Audio-Bits-Per-Sample": "16",
+        "X-Audio-Codec": "pcm_s16le",
+    }
+
+    return StreamingResponse(
+        audio_stream_generator(),
+        media_type=media_type,
+        headers=headers,
+    )
+
+
+async def _file_speech_response(model_instance: TTSBackend, request: SpeechRequest):
+    """Return a FileResponse with the complete audio file (non-streaming fallback)."""
+    func = functools.partial(
+        model_instance.speech,
+        request.input,
+        request.voice,
+        request.speed,
+        request.response_format,
+    )
+
+    loop = asyncio.get_event_loop()
+    audio_file = await loop.run_in_executor(
+        executor,
+        func,
+    )
+
+    media_type = get_media_type(request.response_format)
+    return FileResponse(audio_file, media_type=media_type)
 
 
 # ref: https://github.com/LMS-Community/slimserver/blob/public/10.0/types.conf

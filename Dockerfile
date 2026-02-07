@@ -11,13 +11,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install vox-box (torch/torchaudio already in base image)
+# Install vox-box dependencies from PyPI (stable, resolved versions)
 RUN pip install --no-cache-dir vox-box
 
-# Patch: disable JIT loading for CosyVoice (JIT .zip files are not in HuggingFace repos)
-RUN COSYVOICE_CLI=$(python -c "import vox_box; import os; print(os.path.join(os.path.dirname(vox_box.__file__), 'third_party/CosyVoice/cosyvoice/cli/cosyvoice.py'))") && \
-    sed -i 's/def __init__(self, model_dir, load_jit=True, load_onnx=False, fp16=True):/def __init__(self, model_dir, load_jit=False, load_onnx=False, fp16=True):/' "$COSYVOICE_CLI" && \
-    echo "Patched CosyVoice: load_jit default changed to False"
+# Copy local source with streaming TTS improvements
+COPY vox_box /opt/vox_box_src
+
+# Overwrite installed package with our modified source
+RUN SITE_PKG=$(python -c "import vox_box; import os; print(os.path.dirname(vox_box.__file__))") && \
+    cp -r /opt/vox_box_src/* "$SITE_PKG/" && \
+    rm -rf /opt/vox_box_src && \
+    echo "Patched vox_box with streaming TTS support"
 
 # Create data directory
 RUN mkdir -p /data

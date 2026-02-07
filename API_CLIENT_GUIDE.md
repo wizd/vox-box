@@ -412,3 +412,10 @@ curl http://localhost:8082/v1/voices
 3. **并发**: 服务使用线程池处理请求，支持并发调用
 4. **语速**: TTS `speed` 参数范围为 `0.25`（慢速）到 `2.0`（快速），默认 `1.0`
 5. **中文识别建议**: STT 可设置 `language=zh` 以提高中文识别准确率，或使用 `auto` 自动检测
+
+
+# LiveKit Agent 建议配置
+response_format = "pcm"  # 流式 PCM，最低 TTFB
+sample_rate = 22050       # 见响应头 X-Audio-Sample-Rate
+channels = 1              # 单声道
+bits_per_sample = 16      # 16-bit signed little-endian

@@ -4,14 +4,18 @@ import sys
 import wave
 import numpy as np
 import tempfile
+import logging
+import time
 import torch
-from typing import Dict, List, Optional
+from typing import Dict, Generator, List, Optional
 
 from vox_box.backends.tts.base import TTSBackend
 from vox_box.utils.log import log_method
 from vox_box.config.config import BackendEnum, Config, TaskTypeEnum
 from vox_box.utils.audio import convert
 from vox_box.utils.model import create_model_dict
+
+logger = logging.getLogger(__name__)
 
 paths_to_insert = [
     os.path.join(os.path.dirname(__file__), "../../third_party/CosyVoice"),
@@ -44,6 +48,7 @@ class CosyVoice(TTSBackend):
         self._model = None
         self._model_dict = {}
         self._is_cosyvoice_v2 = False
+        self._sample_rate = 22050
 
         self._parse_and_set_cuda_visible_devices()
 
@@ -84,8 +89,10 @@ class CosyVoice(TTSBackend):
         else:
             from cosyvoice.cli.cosyvoice import CosyVoice as CosyVoiceModel
 
-            self._model = CosyVoiceModel(self._cfg.model)
+            # Disable JIT loading — JIT .zip files are not in HuggingFace repos
+            self._model = CosyVoiceModel(self._cfg.model, load_jit=False)
 
+        self._sample_rate = self._model.sample_rate
         self._voices = self._get_voices()
         self._model_dict = create_model_dict(
             self._cfg.model,
@@ -116,15 +123,20 @@ class CosyVoice(TTSBackend):
             raise ValueError(f"Voice {voice} not supported")
 
         original_voice = self._get_original_voice(voice)
+
+        # Use stream=True for parallel LLM + flow/hift processing (faster total time)
+        # Note: speed != 1.0 is NOT supported in streaming mode by CosyVoice,
+        # so fall back to non-streaming when speed is customized.
+        use_stream = (speed == 1.0)
         model_output = self._model.inference_sft(
-            input, original_voice, stream=False, speed=speed
+            input, original_voice, stream=use_stream, speed=speed
         )
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as temp_file:
             wav_file_path = temp_file.name
             with wave.open(wav_file_path, "wb") as wf:
                 wf.setnchannels(1)  # single track
                 wf.setsampwidth(2)  # 16-bit
-                wf.setframerate(22050)  # Sample rate
+                wf.setframerate(self._sample_rate)
                 for i in model_output:
                     tts_audio = (
                         (i["tts_speech"].numpy() * (2**15)).astype(np.int16).tobytes()
@@ -133,6 +145,52 @@ class CosyVoice(TTSBackend):
 
                 output_file_path = convert(wav_file_path, reponse_format, speed)
                 return output_file_path
+
+    def speech_stream(
+        self,
+        input: str,
+        voice: Optional[str] = "Chinese Female",
+        speed: float = 1,
+        **kwargs,
+    ) -> Generator[bytes, None, None]:
+        """Stream raw PCM audio chunks (16-bit signed, mono) as they're generated.
+
+        Uses CosyVoice's native streaming: LLM token generation runs in parallel
+        with flow decoder and HiFi-GAN, yielding audio chunks as soon as each
+        segment is ready. This dramatically reduces time-to-first-byte.
+        """
+        if voice not in self._voices:
+            raise ValueError(f"Voice {voice} not supported")
+
+        original_voice = self._get_original_voice(voice)
+
+        logger.info(
+            f"Starting streaming speech in CosyVoice: "
+            f"text_len={len(input)}, voice={voice}"
+        )
+        start_time = time.time()
+        first_chunk = True
+
+        model_output = self._model.inference_sft(
+            input, original_voice, stream=True, speed=speed
+        )
+
+        for chunk in model_output:
+            pcm_data = (
+                (chunk["tts_speech"].numpy() * (2**15)).astype(np.int16).tobytes()
+            )
+            if first_chunk:
+                ttfb = time.time() - start_time
+                logger.info(f"Streaming TTFB: {ttfb:.2f}s, chunk_size={len(pcm_data)}")
+                first_chunk = False
+            yield pcm_data
+
+        total_time = time.time() - start_time
+        logger.info(f"Streaming speech completed in {total_time:.2f}s")
+
+    @property
+    def stream_sample_rate(self) -> int:
+        return self._sample_rate
 
     def _get_voices(self) -> List[str]:
         voices = self._model.list_available_spks()
