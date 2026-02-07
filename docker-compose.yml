@@ -1,0 +1,66 @@
+services:
+  # 语音识别 (Speech-to-Text) - 支持中文
+  # faster-whisper-large-v3: 最佳多语言模型，中文识别效果优秀
+  vox-stt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vox-stt
+    ports:
+      - "8080:80"
+    volumes:
+      - vox-stt-data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "80"
+      - "--device"
+      - "cuda:0"
+      - "--huggingface-repo-id"
+      - "Systran/faster-whisper-large-v3"
+      - "--data-dir"
+      - "/data"
+    restart: unless-stopped
+
+  # 语音合成 (Text-to-Speech) - 支持中文
+  # CosyVoice-300M-SFT: 高质量中文语音合成模型（已验证 Linux 支持）
+  vox-tts:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vox-tts
+    ports:
+      - "8082:80"
+    volumes:
+      - vox-tts-data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "80"
+      - "--device"
+      - "cuda:0"
+      - "--huggingface-repo-id"
+      - "FunAudioLLM/CosyVoice-300M-SFT"
+      - "--data-dir"
+      - "/data"
+    restart: unless-stopped
+
+volumes:
+  vox-stt-data:
+  vox-tts-data:

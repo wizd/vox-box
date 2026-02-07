@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+*.pyo
+hack
+.flake8
+.pre-commit-config.yaml
+poetry.lock
+*.egg-info
+dist
+build
+.mypy_cache
+.pytest_cache
