@@ -61,6 +61,37 @@ services:
       - "/data"
     restart: unless-stopped
 
+  # Qwen3-TTS - 高性能低延迟中文语音合成 (vLLM-Omni)
+  # 独立服务，与 CosyVoice 并存，API 兼容 OpenAI /v1/audio/speech
+  qwen3-tts:
+    image: vllm/vllm-omni:v0.14.0
+    container_name: qwen3-tts
+    ports:
+      - "8083:8000"
+    volumes:
+      - qwen3-tts-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    ipc: host
+    entrypoint: ["vllm", "serve", "--omni"]
+    command:
+      - "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+      - "--gpu-memory-utilization"
+      - "0.5"
+      - "--trust-remote-code"
+      - "--enforce-eager"
+    restart: unless-stopped
+
 volumes:
   vox-stt-data:
   vox-tts-data:
+  qwen3-tts-cache:

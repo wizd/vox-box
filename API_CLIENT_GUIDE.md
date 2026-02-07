@@ -1,17 +1,20 @@
 # Vox Box API 客户端调用指南
 
-Vox Box 提供兼容 OpenAI API 的语音服务，包含**语音合成 (TTS)** 和**语音识别 (STT)** 两个独立服务。
+Vox Box 提供兼容 OpenAI API 的语音服务，包含**语音合成 (TTS)** 和**语音识别 (STT)** 多个独立服务。
 
 ## 服务地址
 
 | 服务 | 地址 | 模型 | 功能 |
 |------|------|------|------|
 | 语音识别 (STT) | `http://localhost:8080` | faster-whisper-large-v3 | 语音转文字 |
-| 语音合成 (TTS) | `http://localhost:8082` | CosyVoice-300M-SFT | 文字转语音 |
+| 语音合成 (TTS) - CosyVoice | `http://localhost:8082` | CosyVoice-300M-SFT | 文字转语音（支持流式） |
+| 语音合成 (TTS) - Qwen3-TTS | `http://localhost:8083` | Qwen3-TTS-12Hz-1.7B-CustomVoice | 文字转语音（高质量，支持风格控制） |
 
 ---
 
-## 一、语音合成 (Text-to-Speech)
+## 一、语音合成 - CosyVoice (Text-to-Speech)
+
+> 端口 `8082` | 支持流式 PCM/WAV | 适合实时对话场景
 
 ### `POST /v1/audio/speech`
 
@@ -24,7 +27,7 @@ Vox Box 提供兼容 OpenAI API 的语音服务，包含**语音合成 (TTS)** �
 | `model` | string | 是 | - | 模型名称，填 `"cosyvoice"` 即可 |
 | `input` | string | 是 | - | 要合成的文本内容 |
 | `voice` | string | 是 | - | 语音角色，见下方可用声色表 |
-| `response_format` | string | 否 | `"mp3"` | 输出音频格式 |
+| `response_format` | string | 否 | `"mp3"` | 输出音频格式（`pcm`/`wav` 支持流式） |
 | `speed` | float | 否 | `1.0` | 语速，范围 `0.25` ~ `2.0` |
 
 ### 可用声色 (voice)
@@ -41,14 +44,14 @@ Vox Box 提供兼容 OpenAI API 的语音服务，包含**语音合成 (TTS)** �
 
 ### 支持的输出格式 (response_format)
 
-| 格式 | MIME 类型 |
-|------|-----------|
-| `mp3` | `audio/mpeg` |
-| `wav` | `audio/wav` |
-| `flac` | `audio/x-flac` |
-| `opus` | `audio/ogg;codec=opus` |
-| `aac` | `audio/aac` |
-| `pcm` | `audio/pcm` |
+| 格式 | MIME 类型 | 流式 |
+|------|-----------|------|
+| `mp3` | `audio/mpeg` | 否 |
+| `wav` | `audio/wav` | 是 |
+| `flac` | `audio/x-flac` | 否 |
+| `opus` | `audio/ogg;codec=opus` | 否 |
+| `aac` | `audio/aac` | 否 |
+| `pcm` | `audio/pcm` | 是 |
 
 ### 示例
 
@@ -152,6 +155,172 @@ async function textToSpeech(text, voice = "Chinese Female") {
 
 textToSpeech("你好，世界！");
 ```
+
+---
+
+## 一-B、语音合成 - Qwen3-TTS (Text-to-Speech)
+
+> 端口 `8083` | 基于 vLLM-Omni | 高质量多语言语音合成，支持风格/情感控制
+
+### `POST /v1/audio/speech`
+
+将文本转换为语音音频文件。API 兼容 OpenAI 格式。
+
+### 请求参数 (JSON Body)
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `input` | string | 是 | - | 要合成的文本内容 |
+| `voice` | string | 否 | `"vivian"` | 语音角色，见下方可用声色表 |
+| `language` | string | 否 | `"Auto"` | 语言：`Auto`、`Chinese`、`English`、`Japanese`、`Korean` |
+| `response_format` | string | 否 | `"wav"` | 输出格式：`wav`、`mp3`、`flac`、`pcm`、`aac`、`opus` |
+| `speed` | float | 否 | `1.0` | 语速，范围 `0.25` ~ `4.0` |
+| `instructions` | string | 否 | `""` | 风格/情感指令，如 `"用开心的语气说"`、`"Speak with great enthusiasm"` |
+| `model` | string | 否 | 自动 | 模型名称（单模型部署时可省略） |
+
+### 可用声色 (voice)
+
+通过 `GET /v1/audio/voices` 获取完整列表。
+
+| voice 值 | 说明 |
+|----------|------|
+| `vivian` | 女声（默认） |
+| `serena` | 女声 |
+| `ono_anna` | 女声 |
+| `sohee` | 女声 |
+| `ryan` | 男声 |
+| `aiden` | 男声 |
+| `dylan` | 男声 |
+| `eric` | 男声 |
+| `uncle_fu` | 男声 |
+
+### 支持语言
+
+| language 值 | 语言 |
+|-------------|------|
+| `Auto` | 自动检测（默认） |
+| `Chinese` | 中文 |
+| `English` | 英文 |
+| `Japanese` | 日语 |
+| `Korean` | 韩语 |
+
+### 示例
+
+#### cURL
+
+```bash
+# 基础中文女声合成
+curl -X POST http://localhost:8083/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "你好，欢迎使用 Qwen3 语音合成服务。",
+    "voice": "vivian",
+    "language": "Chinese"
+  }' --output qwen3_speech.wav
+
+# 带风格控制 — 开心的语气
+curl -X POST http://localhost:8083/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "哇，今天的天气也太好了吧！",
+    "voice": "vivian",
+    "language": "Chinese",
+    "instructions": "用开心的语气说"
+  }' --output qwen3_happy.wav
+
+# 英文男声
+curl -X POST http://localhost:8083/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "Hello, this is a voice synthesis test.",
+    "voice": "ryan",
+    "language": "English"
+  }' --output qwen3_en.wav
+
+# MP3 格式输出
+curl -X POST http://localhost:8083/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "这是 MP3 格式的输出测试。",
+    "voice": "vivian",
+    "response_format": "mp3"
+  }' --output qwen3_speech.mp3
+
+# 查询可用声色
+curl http://localhost:8083/v1/audio/voices
+```
+
+#### Python
+
+```python
+import requests
+
+response = requests.post(
+    "http://localhost:8083/v1/audio/speech",
+    json={
+        "input": "你好，这是 Qwen3-TTS 中文语音合成测试。",
+        "voice": "vivian",
+        "language": "Chinese",
+        "response_format": "wav",
+    },
+    timeout=300,
+)
+
+with open("qwen3_output.wav", "wb") as f:
+    f.write(response.content)
+```
+
+#### Python (OpenAI SDK 兼容)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8083/v1", api_key="not-needed")
+
+response = client.audio.speech.create(
+    model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    input="你好，这是通过 OpenAI SDK 调用的 Qwen3 语音合成。",
+    voice="vivian",
+)
+
+response.stream_to_file("qwen3_output.wav")
+```
+
+#### JavaScript / Node.js
+
+```javascript
+const fs = require("fs");
+
+async function qwen3TTS(text, voice = "vivian") {
+  const response = await fetch("http://localhost:8083/v1/audio/speech", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      input: text,
+      voice: voice,
+      language: "Chinese",
+      response_format: "wav",
+    }),
+  });
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  fs.writeFileSync("qwen3_output.wav", buffer);
+}
+
+qwen3TTS("你好，世界！");
+```
+
+### CosyVoice vs Qwen3-TTS 对比
+
+| 特性 | CosyVoice (8082) | Qwen3-TTS (8083) |
+|------|-------------------|-------------------|
+| 模型大小 | 300M | 1.7B |
+| 流式支持 | 是（PCM/WAV） | 否（全量生成后返回） |
+| 风格/情感控制 | 否 | 是（`instructions` 参数） |
+| 支持语言 | 中/英/日/粤/韩 | 中/英/日/韩 |
+| 语速控制 | 0.25 ~ 2.0 | 0.25 ~ 4.0 |
+| 声色数量 | 7 | 9 |
+| 适用场景 | 实时对话（低 TTFB） | 离线生成、高质量场景 |
 
 ---
 
@@ -308,8 +477,10 @@ transcribe("audio.mp3");
 ```bash
 # STT 服务
 curl http://localhost:8080/health
-# TTS 服务
+# TTS - CosyVoice
 curl http://localhost:8082/health
+# TTS - Qwen3-TTS
+curl http://localhost:8083/health
 ```
 
 **返回**: `{"status": "ok"}` 或 HTTP 503 (模型加载中)
@@ -319,9 +490,10 @@ curl http://localhost:8082/health
 ```bash
 # STT 模型列表
 curl http://localhost:8080/v1/models
-
-# TTS 模型列表
+# TTS - CosyVoice 模型列表
 curl http://localhost:8082/v1/models
+# TTS - Qwen3-TTS 模型列表
+curl http://localhost:8083/v1/models
 ```
 
 ### 查询可用语言 (STT)
@@ -333,7 +505,10 @@ curl http://localhost:8080/v1/languages
 ### 查询可用声色 (TTS)
 
 ```bash
+# CosyVoice 声色
 curl http://localhost:8082/v1/voices
+# Qwen3-TTS 声色
+curl http://localhost:8083/v1/audio/voices
 ```
 
 ---
@@ -409,13 +584,31 @@ curl http://localhost:8082/v1/voices
 
 1. **API Key**: 本地部署无需认证，`api_key` 字段可填任意值（如 `"not-needed"`）
 2. **模型加载**: 首次启动需从 HuggingFace 下载模型，请等待 `/health` 返回 `ok` 后再调用
-3. **并发**: 服务使用线程池处理请求，支持并发调用
-4. **语速**: TTS `speed` 参数范围为 `0.25`（慢速）到 `2.0`（快速），默认 `1.0`
+3. **并发**: CosyVoice 使用线程池处理；Qwen3-TTS 基于 vLLM 引擎，当前 `max_num_seqs=1`（顺序处理）
+4. **语速**: CosyVoice `speed` 范围 `0.25` ~ `2.0`；Qwen3-TTS `speed` 范围 `0.25` ~ `4.0`
 5. **中文识别建议**: STT 可设置 `language=zh` 以提高中文识别准确率，或使用 `auto` 自动检测
+6. **Qwen3-TTS 特殊说明**:
+   - 首次请求较慢（模型预热），后续请求速度更稳定
+   - `instructions` 参数可控制风格/情感（仅 CustomVoice 任务支持）
+   - 当前不支持流式输出，音频全量生成后一次性返回
+   - `timeout` 建议设置 300 秒以上
 
+## 七、LiveKit Agent 建议配置
 
-# LiveKit Agent 建议配置
+### CosyVoice（推荐实时对话场景）
+
+```
 response_format = "pcm"  # 流式 PCM，最低 TTFB
 sample_rate = 22050       # 见响应头 X-Audio-Sample-Rate
 channels = 1              # 单声道
 bits_per_sample = 16      # 16-bit signed little-endian
+```
+
+### Qwen3-TTS（推荐高质量离线生成）
+
+```
+response_format = "wav"   # WAV 格式
+sample_rate = 24000       # Qwen3-TTS 默认采样率
+channels = 1              # 单声道
+bits_per_sample = 16      # 16-bit signed little-endian
+```
