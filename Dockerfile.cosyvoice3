@@ -1,0 +1,15 @@
+FROM neosun/cosyvoice:v3.4.0
+
+# Upgrade PyTorch for RTX 5090 Blackwell (sm_120) support
+# Base image has PyTorch 2.3.1+cu121 which only supports up to sm_90
+SHELL ["conda", "run", "-n", "cosyvoice", "/bin/bash", "-c"]
+
+RUN pip install --no-cache-dir \
+    torch==2.7.0 torchaudio==2.7.0 \
+    --index-url https://download.pytorch.org/whl/cu128
+
+# Upgrade onnxruntime-gpu for cuDNN 9 compatibility (PyTorch 2.7 ships cuDNN 9)
+# onnxruntime-gpu 1.18.0 requires cuDNN 8, newer versions support cuDNN 9
+RUN pip install --no-cache-dir onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+
+CMD ["conda", "run", "--no-capture-output", "-n", "cosyvoice", "python", "app.py"]

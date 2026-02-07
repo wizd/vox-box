@@ -91,7 +91,29 @@ services:
       - "--enforce-eager"
     restart: unless-stopped
 
+  # CosyVoice3 - 高性能流式中文语音合成 (Fun-CosyVoice3-0.5B)
+  # OpenAI 兼容 API, 流式 PCM, ~1.2s TTFB
+  # 基于 neosun/cosyvoice:v3.4.0 升级 PyTorch 以支持 RTX 5090 Blackwell
+  cosyvoice3:
+    build:
+      context: .
+      dockerfile: Dockerfile.cosyvoice3
+    container_name: cosyvoice3
+    ports:
+      - "8188:8188"
+    volumes:
+      - cosyvoice3-voices:/data/voices
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    restart: unless-stopped
+
 volumes:
   vox-stt-data:
   vox-tts-data:
   qwen3-tts-cache:
+  cosyvoice3-voices:
