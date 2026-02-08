@@ -126,6 +126,7 @@ services:
       - "8002:8002"   # Triton metrics
     volumes:
       - cosyvoice2-trt-data:/workspace/persist
+      - ./scripts/patch_cosyvoice2_token2wav.py:/workspace/patches/patch_cosyvoice2_token2wav.py:ro
     environment:
       - PYTHONIOENCODING=utf-8
     deploy:
@@ -145,6 +146,9 @@ services:
           git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git $$PERSIST/CosyVoice ;
         fi &&
         ln -sfn $$PERSIST/CosyVoice /workspace/CosyVoice &&
+
+        echo '=== Step 1.5: Patch token2wav template for short mel ===' &&
+        python3 /workspace/patches/patch_cosyvoice2_token2wav.py --target $$PERSIST/CosyVoice/runtime/triton_trtllm/model_repo/token2wav/1/model.py &&
 
         cd /workspace/CosyVoice/runtime/triton_trtllm &&
 
