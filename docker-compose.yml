@@ -112,8 +112,79 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
+  # CosyVoice2 TRT-LLM - 极致低延迟流式 TTS (Triton + TensorRT-LLM)
+  # 流式 TTFB ~190ms, RTF < 0.15, gRPC streaming
+  # 首次启动需下载模型 + 编译 TRT 引擎，约 30-60 分钟
+  cosyvoice2-trt:
+    image: soar97/triton-cosyvoice:25.06
+    container_name: cosyvoice2-trt
+    ipc: host
+    shm_size: '2gb'
+    ports:
+      - "8000:8000"   # Triton HTTP
+      - "8001:8001"   # Triton gRPC (流式推荐)
+      - "8002:8002"   # Triton metrics
+    volumes:
+      - cosyvoice2-trt-data:/workspace/persist
+    environment:
+      - PYTHONIOENCODING=utf-8
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    command: >
+      /bin/bash -c "
+        set -e &&
+        PERSIST=/workspace/persist &&
+
+        echo '=== Step 1: Clone CosyVoice repo ===' &&
+        if [ ! -d $$PERSIST/CosyVoice ]; then
+          git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git $$PERSIST/CosyVoice ;
+        fi &&
+        ln -sfn $$PERSIST/CosyVoice /workspace/CosyVoice &&
+
+        cd /workspace/CosyVoice/runtime/triton_trtllm &&
+
+        echo '=== Step 2: Download models from HuggingFace ===' &&
+        if [ ! -f cosyvoice2_llm/model.safetensors ]; then
+          huggingface-cli download --local-dir cosyvoice2_llm yuekai/cosyvoice2_llm ;
+        fi &&
+        if [ ! -f CosyVoice2-0.5B/cosyvoice2.yaml ]; then
+          huggingface-cli download --local-dir CosyVoice2-0.5B FunAudioLLM/CosyVoice2-0.5B ;
+        fi &&
+        if [ ! -f CosyVoice2-0.5B/spk2info.pt ]; then
+          wget -q https://raw.githubusercontent.com/qi-hua/async_cosyvoice/main/CosyVoice2-0.5B/spk2info.pt -O CosyVoice2-0.5B/spk2info.pt ;
+        fi &&
+
+        echo '=== Step 3: Build TRT engines ===' &&
+        if [ ! -f trt_engines_bfloat16/rank0.engine ]; then
+          bash run.sh 1 1 ;
+        fi &&
+
+        echo '=== Step 4: Create model repo + Start Triton ===' &&
+        bash run.sh 2 3
+      "
+    restart: unless-stopped
+
+  # CosyVoice2 OpenAI-Compatible HTTP Bridge
+  # 将 /v1/audio/speech API 转发到 Triton gRPC，返回流式 WAV/PCM
+  cosyvoice2-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.cosyvoice2-bridge
+    container_name: cosyvoice2-bridge
+    ports:
+      - "9880:9880"
+    depends_on:
+      - cosyvoice2-trt
+    restart: unless-stopped
+
 volumes:
   vox-stt-data:
   vox-tts-data:
   qwen3-tts-cache:
   cosyvoice3-voices:
+  cosyvoice2-trt-data:

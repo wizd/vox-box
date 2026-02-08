@@ -9,7 +9,8 @@ Vox Box 提供兼容 OpenAI API 的语音服务，包含**语音合成 (TTS)** �
 | 语音识别 (STT) | `http://localhost:8080` | faster-whisper-large-v3 | 语音转文字 |
 | 语音合成 (TTS) - CosyVoice | `http://localhost:8082` | CosyVoice-300M-SFT | 文字转语音（支持流式） |
 | 语音合成 (TTS) - Qwen3-TTS | `http://localhost:8083` | Qwen3-TTS-12Hz-1.7B-CustomVoice | 文字转语音（高质量，支持风格控制） |
-| **语音合成 (TTS) - CosyVoice3** | **`http://localhost:8188`** | **Fun-CosyVoice3-0.5B** | **文字转语音（推荐，流式低延迟，声色克隆）** |
+| 语音合成 (TTS) - CosyVoice3 | `http://localhost:8188` | Fun-CosyVoice3-0.5B | 文字转语音（流式，声色克隆） |
+| **语音合成 (TTS) - CosyVoice2 TRT** | **`http://localhost:9880`** | **CosyVoice2-0.5B (TensorRT-LLM)** | **文字转语音（推荐，极致低延迟流式）** |
 
 ---
 
@@ -467,17 +468,138 @@ response.stream_to_file("output.wav")
 
 ### 全方案 TTS 对比总览
 
-| 特性 | CosyVoice v1 (8082) | Qwen3-TTS (8083) | CosyVoice3 (8188) |
-|------|---------------------|-------------------|---------------------|
-| 模型 | CosyVoice-300M-SFT | Qwen3-TTS-1.7B | Fun-CosyVoice3-0.5B |
-| TTFB (流式) | ~5s | 不支持流式 | **~2.5s** |
-| 流式支持 | 是 | 否 | **是** |
-| 声色克隆 | 否 | 否 | **是** |
-| 风格控制 | 否 | 是 | 否 |
-| 语言 | 中/英/日/粤/韩 | 中/英/日/韩 | 中/英/日/韩 + 18 方言 |
-| VRAM | ~4-6 GB | ~16 GB | **~3.2 GB** |
-| 采样率 | 22050 Hz | 24000 Hz | 24000 Hz |
-| 推荐场景 | 备用 | 离线高质量 | **实时对话（推荐）** |
+| 特性 | CosyVoice v1 (8082) | Qwen3-TTS (8083) | CosyVoice3 (8188) | CosyVoice2 TRT (9880) |
+|------|---------------------|-------------------|---------------------|------------------------|
+| 模型 | CosyVoice-300M-SFT | Qwen3-TTS-1.7B | Fun-CosyVoice3-0.5B | CosyVoice2-0.5B + TRT-LLM |
+| TTFB (流式) | ~5s | 不支持流式 | ~2.5s | **~300-400ms** |
+| RTF | ~1.5x | N/A | ~1.7x | **~0.5-0.9x** |
+| 流式支持 | 是 | 否 | 是 | **是（gRPC + HTTP）** |
+| 声色克隆 | 否 | 否 | 是 | 是（需 gRPC） |
+| 风格控制 | 否 | 是 | 否 | 否 |
+| 语言 | 中/英/日/粤/韩 | 中/英/日/韩 | 中/英/日/韩 + 18 方言 | 中/英 |
+| VRAM | ~4-6 GB | ~16 GB | ~3.2 GB | **~5 GB** |
+| 采样率 | 22050 Hz | 24000 Hz | 24000 Hz | 24000 Hz |
+| 推荐场景 | 备用 | 离线高质量 | 声色克隆场景 | **实时对话（推荐）** |
+
+---
+
+## 一-D、语音合成 - CosyVoice2 TRT-LLM (Text-to-Speech) [推荐]
+
+> 端口 `9880` | CosyVoice2-0.5B + TensorRT-LLM | 流式 WAV/PCM | TTFB ~300ms | RTF < 1.0
+
+CosyVoice2 TRT-LLM 是目前性能最强的中文 TTS 方案，基于 NVIDIA TensorRT-LLM 加速的 CosyVoice2-0.5B 模型，
+通过 Triton Inference Server 提供 gRPC 流式推理，外加 OpenAI 兼容 HTTP Bridge 层。
+
+### 架构
+
+```
+Client → HTTP Bridge (9880) → Triton gRPC (8001) → TRT-LLM Engine → 流式音频
+```
+
+### `POST /v1/audio/speech`
+
+将文本转换为流式语音音频。API 兼容 OpenAI 格式。
+
+### 请求参数 (JSON Body)
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `input` | string | 是 | - | 要合成的文本内容 |
+| `model` | string | 否 | `"cosyvoice2-0.5b"` | 模型名称（可省略） |
+| `voice` | string | 否 | `"default"` | 语音角色（当前使用默认说话人） |
+| `response_format` | string | 否 | `"wav"` | 输出格式：`wav` 或 `pcm` |
+
+### 示例
+
+#### cURL
+
+```bash
+# WAV 格式
+curl -X POST http://localhost:9880/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "你好，欢迎使用 CosyVoice2 极速语音合成。"}' \
+  -o output.wav
+
+# PCM 格式（最低延迟，适合 LiveKit 等实时场景）
+curl -X POST http://localhost:9880/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "你好世界", "response_format": "pcm"}' \
+  -o output.pcm
+```
+
+#### Python
+
+```python
+import requests
+
+response = requests.post(
+    "http://localhost:9880/v1/audio/speech",
+    json={
+        "input": "你好，这是 CosyVoice2 TRT-LLM 极速语音合成测试。",
+        "response_format": "wav",
+    },
+)
+
+with open("output.wav", "wb") as f:
+    f.write(response.content)
+```
+
+#### Python (流式接收)
+
+```python
+import requests
+
+resp = requests.post(
+    "http://localhost:9880/v1/audio/speech",
+    json={
+        "input": "你好，这是流式极速语音合成测试。",
+        "response_format": "pcm"
+    },
+    stream=True
+)
+
+with open("output.pcm", "wb") as f:
+    for chunk in resp.iter_content(chunk_size=4096):
+        if chunk:
+            f.write(chunk)
+            # 实时场景可在此处播放 chunk
+```
+
+#### Python (OpenAI SDK 兼容)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:9880/v1", api_key="not-needed")
+
+response = client.audio.speech.create(
+    model="cosyvoice2-0.5b",
+    input="你好，这是通过 OpenAI SDK 调用的 CosyVoice2 极速语音合成。",
+    voice="default",
+)
+
+response.stream_to_file("output.wav")
+```
+
+### 性能基准（RTX 5090, 流式）
+
+| 文本长度 | TTFB | 总耗时 | 音频时长 | RTF |
+|----------|------|--------|----------|-----|
+| 短句 10 字 | 324ms | 3.9s | 3.9s | 0.98 |
+| 中句 16 字 | 315ms | 3.9s | 4.8s | 0.81 |
+| 长句 24 字 | 307ms | 4.2s | 7.5s | 0.56 |
+
+> 首次请求因模型预热 TTFB 约 350ms，后续请求稳定在 ~300ms
+
+### 辅助端点
+
+```bash
+# 健康检查
+curl http://localhost:9880/health
+
+# 查询模型
+curl http://localhost:9880/v1/models
+```
 
 ---
 
@@ -640,6 +762,8 @@ curl http://localhost:8082/health
 curl http://localhost:8083/health
 # TTS - CosyVoice3
 curl http://localhost:8188/health
+# TTS - CosyVoice2 TRT (推荐)
+curl http://localhost:9880/health
 ```
 
 **返回**: `{"status": "ok"}` 或 HTTP 503 (模型加载中)
@@ -767,10 +891,21 @@ channels = 1              # 单声道
 bits_per_sample = 16      # 16-bit signed little-endian
 ```
 
-### CosyVoice3（推荐实时对话）
+### CosyVoice2 TRT（推荐实时对话，最低延迟）
 
 ```
+base_url = "http://localhost:9880/v1"
 response_format = "pcm"   # 流式 PCM，最低 TTFB
+sample_rate = 24000       # CosyVoice2 采样率
+channels = 1              # 单声道
+bits_per_sample = 16      # 16-bit signed little-endian
+# TTFB ~300ms, RTF < 1.0
+```
+
+### CosyVoice3（声色克隆场景）
+
+```
+response_format = "pcm"   # 流式 PCM
 sample_rate = 24000       # CosyVoice3 采样率
 channels = 1              # 单声道
 bits_per_sample = 16      # 16-bit signed little-endian

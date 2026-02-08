@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    fastapi \
+    uvicorn[standard] \
+    numpy \
+    tritonclient[grpc]
+
+COPY cosyvoice2_bridge.py /app/
+
+EXPOSE 9880
+
+CMD ["python", "cosyvoice2_bridge.py", "--triton-url", "cosyvoice2-trt:8001", "--port", "9880"]
