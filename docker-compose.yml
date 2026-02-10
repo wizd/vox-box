@@ -126,6 +126,7 @@ services:
       - "8002:8002"   # Triton metrics
     volumes:
       - cosyvoice2-trt-data:/workspace/persist
+      - ./scripts/patch_cosyvoice2_token2wav.py:/workspace/patches/patch_cosyvoice2_token2wav.py:ro
     environment:
       - PYTHONIOENCODING=utf-8
     deploy:
@@ -146,7 +147,18 @@ services:
         fi &&
         ln -sfn $$PERSIST/CosyVoice /workspace/CosyVoice &&
 
+        echo '=== Step 1.5: Patch token2wav template for short mel ===' &&
+        python3 /workspace/patches/patch_cosyvoice2_token2wav.py --target $$PERSIST/CosyVoice/runtime/triton_trtllm/model_repo/token2wav/1/model.py &&
+
         cd /workspace/CosyVoice/runtime/triton_trtllm &&
+
+        echo '=== Step 1.6: Fix run.sh bugs ===' &&
+        sed -i 's|fill_template.py -i /tensorrt_llm/|fill_template.py -i $$model_repo/tensorrt_llm/|' run.sh &&
+        sed -i '/tensorrt_llm.*config.pbtxt/s|triton_max_batch_size:,|triton_max_batch_size:16,|' run.sh &&
+        sed -i '/tensorrt_llm.*config.pbtxt/s|decoupled_mode:,|decoupled_mode:True,|' run.sh &&
+        sed -i '/tensorrt_llm.*config.pbtxt/s|engine_dir:,|engine_dir:./trt_engines_bfloat16,|' run.sh &&
+        sed -i '/tensorrt_llm.*config.pbtxt/s|max_queue_delay_microseconds:,|max_queue_delay_microseconds:0,|' run.sh &&
+        sed -i '/tensorrt_llm.*config.pbtxt/s|max_queue_delay_microseconds:$$|max_queue_delay_microseconds:0|' run.sh &&
 
         echo '=== Step 2: Download models from HuggingFace ===' &&
         if [ ! -f cosyvoice2_llm/model.safetensors ]; then

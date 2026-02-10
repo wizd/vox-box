@@ -10,6 +10,7 @@ CosyVoice2 TRT-LLM OpenAI-Compatible HTTP Bridge
 """
 
 import argparse
+import asyncio
 import io
 import queue
 import struct
@@ -90,8 +91,12 @@ class StreamCollector:
             self.queue.put(None)
 
 
-def stream_tts(text: str, response_format: str = "wav"):
-    """Stream TTS audio from Triton CosyVoice2."""
+FIRST_CHUNK_TIMEOUT = 30   # seconds – first chunk may be slow (model warm-up)
+NEXT_CHUNK_TIMEOUT = 10    # seconds – subsequent chunks should arrive faster
+
+
+async def stream_tts(text: str, response_format: str = "wav"):
+    """Async generator: stream TTS audio from Triton CosyVoice2."""
     collector = StreamCollector()
     collector.start_time = time.time()
 
@@ -111,42 +116,50 @@ def stream_tts(text: str, response_format: str = "wav"):
         outputs=outputs,
     )
 
-    def generate():
-        sent_header = False
-        total_samples = 0
-        try:
-            while True:
-                try:
-                    chunk = collector.queue.get(timeout=3)
-                except queue.Empty:
-                    # 3 seconds no data = stream complete
-                    break
+    loop = asyncio.get_event_loop()
+    sent_header = False
+    total_samples = 0
+    first_chunk = True
+    try:
+        while True:
+            timeout = FIRST_CHUNK_TIMEOUT if first_chunk else NEXT_CHUNK_TIMEOUT
+            try:
+                chunk = await loop.run_in_executor(
+                    None, lambda t=timeout: collector.queue.get(timeout=t)
+                )
+            except queue.Empty:
+                if first_chunk:
+                    logger.warning(f"Triton timeout waiting for first chunk ({FIRST_CHUNK_TIMEOUT}s)")
+                break
 
-                if chunk is None:
-                    if collector.error:
-                        logger.error(f"Triton error: {collector.error}")
-                    break
+            if chunk is None:
+                if collector.error:
+                    logger.error(f"Triton error: {collector.error}")
+                break
 
-                # Convert float32 to int16 PCM
-                audio_int16 = np.clip(chunk * 32767, -32768, 32767).astype(np.int16)
-                total_samples += len(audio_int16)
+            first_chunk = False
 
-                if not sent_header and response_format == "wav":
-                    yield create_wav_header(SAMPLE_RATE, BITS_PER_SAMPLE, NUM_CHANNELS)
-                    sent_header = True
+            # Convert float32 to int16 PCM
+            audio_int16 = np.clip(chunk * 32767, -32768, 32767).astype(np.int16)
+            total_samples += len(audio_int16)
 
-                yield audio_int16.tobytes()
+            if not sent_header and response_format == "wav":
+                yield create_wav_header(SAMPLE_RATE, BITS_PER_SAMPLE, NUM_CHANNELS)
+                sent_header = True
 
-        finally:
-            client.stop_stream()
-            elapsed = time.time() - collector.start_time
-            audio_duration = total_samples / SAMPLE_RATE
-            ttfb = (collector.first_chunk_time - collector.start_time) * 1000 if collector.first_chunk_time else 0
+            yield audio_int16.tobytes()
+
+    finally:
+        client.stop_stream()
+        elapsed = time.time() - collector.start_time
+        audio_duration = total_samples / SAMPLE_RATE
+        ttfb = (collector.first_chunk_time - collector.start_time) * 1000 if collector.first_chunk_time else 0
+        if audio_duration > 0:
             logger.info(f"TTS completed: text='{text[:30]}...' ttfb={ttfb:.0f}ms "
-                       f"total={elapsed*1000:.0f}ms audio={audio_duration:.2f}s "
-                       f"rtf={elapsed/audio_duration:.3f}" if audio_duration > 0 else "")
-
-    return generate()
+                        f"total={elapsed*1000:.0f}ms audio={audio_duration:.2f}s "
+                        f"rtf={elapsed/audio_duration:.3f}")
+        else:
+            logger.warning(f"TTS produced no audio: text='{text[:30]}...' elapsed={elapsed*1000:.0f}ms")
 
 
 @app.get("/health")
