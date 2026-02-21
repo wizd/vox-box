@@ -95,7 +95,7 @@ FIRST_CHUNK_TIMEOUT = 30   # seconds – first chunk may be slow (model warm-up)
 NEXT_CHUNK_TIMEOUT = 10    # seconds – subsequent chunks should arrive faster
 
 
-async def stream_tts(text: str, response_format: str = "wav"):
+async def stream_tts(text: str, response_format: str = "wav", request: Request | None = None):
     """Async generator: stream TTS audio from Triton CosyVoice2."""
     collector = StreamCollector()
     collector.start_time = time.time()
@@ -109,7 +109,7 @@ async def stream_tts(text: str, response_format: str = "wav"):
     outputs = [grpcclient.InferRequestedOutput("waveform")]
 
     # Start streaming
-    client.start_stream(callback=collector.callback)
+    client.start_stream(callback=collector.callback, stream_timeout=60)
     client.async_stream_infer(
         model_name=MODEL_NAME,
         inputs=inputs,
@@ -122,6 +122,10 @@ async def stream_tts(text: str, response_format: str = "wav"):
     first_chunk = True
     try:
         while True:
+            if request is not None and await request.is_disconnected():
+                logger.info(f"Client disconnected, cancelling TTS stream: text='{text[:30]}...'")
+                break
+
             timeout = FIRST_CHUNK_TIMEOUT if first_chunk else NEXT_CHUNK_TIMEOUT
             try:
                 chunk = await loop.run_in_executor(
@@ -150,7 +154,7 @@ async def stream_tts(text: str, response_format: str = "wav"):
             yield audio_int16.tobytes()
 
     finally:
-        client.stop_stream()
+        client.stop_stream(cancel_requests=True)
         elapsed = time.time() - collector.start_time
         audio_duration = total_samples / SAMPLE_RATE
         ttfb = (collector.first_chunk_time - collector.start_time) * 1000 if collector.first_chunk_time else 0
@@ -215,7 +219,7 @@ async def create_speech(request: Request):
     content_type = "audio/wav" if response_format == "wav" else "audio/pcm"
 
     return StreamingResponse(
-        stream_tts(text, response_format),
+        stream_tts(text, response_format, request=request),
         media_type=content_type,
         headers={
             "Content-Type": content_type,

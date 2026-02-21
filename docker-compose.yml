@@ -127,6 +127,7 @@ services:
     volumes:
       - cosyvoice2-trt-data:/workspace/persist
       - ./scripts/patch_cosyvoice2_token2wav.py:/workspace/patches/patch_cosyvoice2_token2wav.py:ro
+      - ./scripts/patch_cosyvoice2_llm_thread.py:/workspace/patches/patch_cosyvoice2_llm_thread.py:ro
     environment:
       - PYTHONIOENCODING=utf-8
     deploy:
@@ -176,9 +177,32 @@ services:
           bash run.sh 1 1 ;
         fi &&
 
-        echo '=== Step 4: Create model repo + Start Triton ===' &&
-        bash run.sh 2 3
+        echo '=== Step 4: Create model repo ===' &&
+        bash run.sh 2 2 &&
+
+        echo '=== Step 4.5: Patch cosyvoice2 LLM thread error handling ===' &&
+        python3 /workspace/patches/patch_cosyvoice2_llm_thread.py --target /workspace/CosyVoice/runtime/triton_trtllm/model_repo_cosyvoice2/cosyvoice2/1/model.py &&
+
+        echo '=== Step 4.6: Tune TRT-LLM KV cache + scheduler ===' &&
+        sed -i '/key: \"max_tokens_in_paged_kv_cache\"/{n;n;s|string_value: \".*\"|string_value: \"8192\"|;}' /workspace/CosyVoice/runtime/triton_trtllm/model_repo_cosyvoice2/tensorrt_llm/config.pbtxt &&
+        sed -i '/key: \"kv_cache_free_gpu_mem_fraction\"/{n;n;s|string_value: \".*\"|string_value: \"0.5\"|;}' /workspace/CosyVoice/runtime/triton_trtllm/model_repo_cosyvoice2/tensorrt_llm/config.pbtxt &&
+        sed -i '/key: \"batch_scheduler_policy\"/{n;n;s|string_value: \".*\"|string_value: \"max_utilization\"|;}' /workspace/CosyVoice/runtime/triton_trtllm/model_repo_cosyvoice2/tensorrt_llm/config.pbtxt &&
+        sed -i 's/default_queue_policy: { max_queue_size: 0 }/default_queue_policy: { max_queue_size: 32 }/' /workspace/CosyVoice/runtime/triton_trtllm/model_repo_cosyvoice2/tensorrt_llm/config.pbtxt &&
+
+        echo '=== Step 5: Start Triton ===' &&
+        bash run.sh 3 3
       "
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/v2/health/ready > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "3"
     restart: unless-stopped
 
   # CosyVoice2 OpenAI-Compatible HTTP Bridge
@@ -191,7 +215,8 @@ services:
     ports:
       - "9880:9880"
     depends_on:
-      - cosyvoice2-trt
+      cosyvoice2-trt:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
