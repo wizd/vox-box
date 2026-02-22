@@ -214,6 +214,15 @@ services:
     container_name: cosyvoice2-bridge
     ports:
       - "9880:9880"
+    environment:
+      - PUNCT_BUFFER_ENABLED=false
+      - PUNCT_MIN_CHARS=12
+      - PUNCT_MAX_CHARS=80
+      - PUNCT_MAX_WAIT_MS=400
+      - OUTPUT_JITTER_BUFFER_MS=650
+      - NEXT_CHUNK_TIMEOUT_S=3
+      - SESSION_SERIALIZE_ENABLED=true
+      - SESSION_LOCK_TIMEOUT_S=120
     depends_on:
       cosyvoice2-trt:
         condition: service_healthy

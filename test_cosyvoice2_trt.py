@@ -23,6 +23,7 @@ class StreamData:
         self.start_time = None
         self.first_chunk_time = None
         self.chunks = []
+        self.chunk_timestamps = []
 
     def record_start(self):
         self.start_time = time.time()
@@ -43,6 +44,7 @@ def callback(stream_data, result, error):
         if stream_data.first_chunk_time is None:
             stream_data.first_chunk_time = now
         stream_data.chunks.append(output.flatten())
+        stream_data.chunk_timestamps.append(now)
         stream_data.queue.put(result)
     else:
         # Empty response = final from decoupled model
@@ -50,7 +52,7 @@ def callback(stream_data, result, error):
 
 
 def test_streaming(text, server=SERVER, model=MODEL):
-    """测试流式推理，返回 (ttfb_ms, total_ms, audio_duration_s, num_chunks)"""
+    """测试流式推理，返回统计字典。"""
     stream_data = StreamData()
     client = grpcclient.InferenceServerClient(url=server, verbose=False)
 
@@ -104,8 +106,31 @@ def test_streaming(text, server=SERVER, model=MODEL):
     # 计算音频时长
     total_samples = sum(len(c) for c in stream_data.chunks)
     audio_duration = total_samples / SAMPLE_RATE
+    chunk_intervals_ms = []
+    for i in range(1, len(stream_data.chunk_timestamps)):
+        chunk_intervals_ms.append((stream_data.chunk_timestamps[i] - stream_data.chunk_timestamps[i - 1]) * 1000)
 
-    return ttfb_ms, total_ms, audio_duration, len(stream_data.chunks)
+    def percentile(values, p):
+        if not values:
+            return 0.0
+        values = sorted(values)
+        k = (len(values) - 1) * p
+        lo = int(k)
+        hi = min(lo + 1, len(values) - 1)
+        if lo == hi:
+            return values[lo]
+        return values[lo] + (values[hi] - values[lo]) * (k - lo)
+
+    return {
+        "ttfb_ms": ttfb_ms or 0.0,
+        "total_ms": total_ms,
+        "audio_duration_s": audio_duration,
+        "num_chunks": len(stream_data.chunks),
+        "rtf": (total_ms / 1000) / audio_duration if audio_duration > 0 else float("inf"),
+        "p95_gap_ms": percentile(chunk_intervals_ms, 0.95),
+        "p99_gap_ms": percentile(chunk_intervals_ms, 0.99),
+        "max_gap_ms": max(chunk_intervals_ms) if chunk_intervals_ms else 0.0,
+    }
 
 
 def test_offline(text, server=SERVER, model=MODEL):
@@ -131,6 +156,12 @@ def test_offline(text, server=SERVER, model=MODEL):
 
 
 if __name__ == "__main__":
+    # Regression gates (保真优先，不达标建议回退标点缓冲)
+    GATE_P95_GAP_MS = 700
+    GATE_MAX_GAP_MS = 1200
+    GATE_MIN_CHUNKS = 1
+    gate_failures = []
+
     print("=" * 60)
     print("CosyVoice2 TRT-LLM Triton 性能测试")
     print(f"Server: {SERVER}, Model: {MODEL}")
@@ -158,11 +189,19 @@ if __name__ == "__main__":
         try:
             r = test_streaming(text, server=SERVER)
             if r:
-                ttfb, total, dur, chunks = r
-                rtf = (total / 1000) / dur if dur > 0 else float('inf')
                 print(f"  Text: {text[:20]}...")
-                print(f"    TTFB: {ttfb:.0f}ms | Total: {total:.0f}ms | "
-                      f"Audio: {dur:.2f}s | Chunks: {chunks} | RTF: {rtf:.3f}")
+                print(
+                    f"    TTFB: {r['ttfb_ms']:.0f}ms | Total: {r['total_ms']:.0f}ms | "
+                    f"Audio: {r['audio_duration_s']:.2f}s | Chunks: {r['num_chunks']} | "
+                    f"RTF: {r['rtf']:.3f} | p95-gap: {r['p95_gap_ms']:.1f}ms | max-gap: {r['max_gap_ms']:.1f}ms"
+                )
+
+                if r["num_chunks"] < GATE_MIN_CHUNKS:
+                    gate_failures.append(f"{text[:20]}... chunk_count={r['num_chunks']}")
+                if r["p95_gap_ms"] > GATE_P95_GAP_MS:
+                    gate_failures.append(f"{text[:20]}... p95_gap={r['p95_gap_ms']:.1f}ms")
+                if r["max_gap_ms"] > GATE_MAX_GAP_MS:
+                    gate_failures.append(f"{text[:20]}... max_gap={r['max_gap_ms']:.1f}ms")
         except Exception as e:
             print(f"  Text: {text[:20]}... Error: {e}")
 
@@ -180,4 +219,12 @@ if __name__ == "__main__":
             print(f"  Text: {text[:20]}... Error: {e}")
 
     print("\n" + "=" * 60)
+    print("--- 回归门禁结果 ---")
+    if gate_failures:
+        print("  FAIL:")
+        for item in gate_failures:
+            print(f"   - {item}")
+        print("  回滚建议: 关闭 PUNCT_BUFFER_ENABLED（保持输入整句直通）")
+    else:
+        print("  PASS: 节拍门禁通过")
     print("测试完成")
